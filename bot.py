@@ -39,7 +39,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import (
     Message, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup,
-    ReplyKeyboardMarkup, KeyboardButton,
+    ReplyKeyboardMarkup, KeyboardButton, ChatJoinRequest,
 )
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
@@ -49,7 +49,7 @@ log = logging.getLogger("anime_bot")
 #                            SOZLAMALAR
 # =====================================================================
 # Token: @BotFather dan olinadi. Environment variable BOT_TOKEN bo'lsa, o'sha ishlatiladi.
-BOT_TOKEN = os.getenv("BOT_TOKEN", "8863123801:AAHAyfTloC6wo0Sn1A9ciu6EBetfUBcIJi8")
+BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 
 # Adminlar (Telegram ID). Environment: ADMIN_IDS="123456789,987654321"
 _env_admins = [int(x) for x in re.split(r"[,\s]+", os.getenv("ADMIN_IDS", "")) if x.isdigit()]
@@ -168,6 +168,22 @@ class db:
                 created_at TEXT
             );
             """)
+            c.executescript("""
+            CREATE TABLE IF NOT EXISTS join_requests(
+                channel_id TEXT,
+                user_id INTEGER,
+                PRIMARY KEY(channel_id, user_id)
+            );
+            """)
+            # eski bazalarga yangi ustunlarni xavfsiz qo'shish
+            for table, col, ddl in [
+                ("channels", "kind", "TEXT DEFAULT 'channel'"),
+                ("animes", "poster", "TEXT DEFAULT ''"),
+                ("animes", "fandub", "TEXT DEFAULT ''"),
+            ]:
+                cols = [r[1] for r in c.execute(f"PRAGMA table_info({table})").fetchall()]
+                if col not in cols:
+                    c.execute(f"ALTER TABLE {table} ADD COLUMN {col} {ddl}")
             for k, v in DEFAULT_TEXTS.items():
                 c.execute("INSERT OR IGNORE INTO texts(key, value) VALUES(?, ?)", (k, v))
             c.commit()
@@ -278,6 +294,264 @@ class db:
     @staticmethod
     def add_wallet(name, card):
         db.run("INSERT INTO wallets(name, card_number) VALUES(?,?)", (name, card))
+
+    @staticmethod
+    def get_wallets(active_only=True):
+        return db.many("SELECT * FROM wallets" + (" WHERE is_active=1" if active_only else ""))
+
+    @staticmethod
+    def delete_wallet(wid):
+        db.run("DELETE FROM wallets WHERE id=?", (wid,))
+
+    # ---------- anime tahrirlash ----------
+    @staticmethod
+    def update_anime(aid, field, value):
+        if field not in ("title", "description", "poster", "fandub", "is_premium"):
+            raise ValueError("noto'g'ri maydon")
+        db.run(f"UPDATE animes SET {field}=? WHERE id=?", (value, aid))
+
+    # ---------- zayafka (join request) ----------
+    @staticmethod
+    def add_join_request(channel_id, user_id):
+        db.run("INSERT OR IGNORE INTO join_requests(channel_id, user_id) VALUES(?,?)", (str(channel_id), user_id))
+
+    @staticmethod
+    def has_join_request(channel_id, user_id):
+        return db.one("SELECT 1 FROM join_requests WHERE channel_id=? AND user_id=?",
+                      (str(channel_id), user_id)) is not None
+
+    # ---------- majburiy obuna kanallari ----------
+    @staticmethod
+    def add_channel(cid, url, kind="channel"):
+        db.run("INSERT OR IGNORE INTO channels(channel_id, channel_url, kind) VALUES(?,?,?)", (cid, url, kind))
+
+    @staticmethod
+    def get_channels():
+        return db.many("SELECT * FROM channels")
+
+    @staticmethod
+    def delete_channel(cid):
+        db.run("DELETE FROM channels WHERE id=?", (cid,))
+
+    # ---------- matnlar / sozlamalar ----------
+    @staticmethod
+    def get_text(key, default=""):
+        r = db.one("SELECT value FROM texts WHERE key=?", (key,))
+        return r["value"] if r else default
+
+    @staticmethod
+    def set_text(key, value):
+        db.run("INSERT OR REPLACE INTO texts(key, value) VALUES(?,?)", (key, value))
+
+    @staticmethod
+    def get_setting(key, default=None):
+        r = db.one("SELECT value FROM settings WHERE key=?", (key,))
+        return r["value"] if r else default
+
+    @staticmethod
+    def set_setting(key, value):
+        db.run("INSERT OR REPLACE INTO settings(key, value) VALUES(?,?)", (key, value))
+
+    # ---------- to'lov so'rovlari ----------
+    @staticmethod
+    def create_payment(rid, user_id, days, amount):
+        db.run("INSERT INTO payments(rid, user_id, days, amount, created_at) VALUES(?,?,?,?,?)",
+               (rid, user_id, days, amount, datetime.now().isoformat()))
+
+    @staticmethod
+    def get_payment(rid):
+        return db.one("SELECT * FROM payments WHERE rid=?", (rid,))
+
+    @staticmethod
+    def resolve_payment(rid, status):
+        """So'rovni faqat BIR marta ko'rib chiqishga ruxsat beradi (ikki marta premium berilmasligi uchun)"""
+        return db.run("UPDATE payments SET status=? WHERE rid=? AND status='pending'", (status, rid))[1] > 0
+
+
+def load_admins():
+    """Admin paneldan qo'shilgan adminlarni bazadan yuklaydi (qayta ishga tushganda yo'qolmaydi)"""
+    try:
+        for a in json.loads(db.get_setting("extra_admins", "[]")):
+            if int(a) not in ADMIN_IDS:
+                ADMIN_IDS.append(int(a))
+    except Exception:
+        log.exception("extra_admins o'qib bo'lmadi")
+
+
+def save_admins():
+    extra = [a for a in ADMIN_IDS if a not in _env_admins and a != 123456789]
+    db.set_setting("extra_admins", json.dumps(extra))
+
+
+# =====================================================================
+#                  YORDAMCHI FUNKSIYALAR VA KLAVIATURALAR
+# =====================================================================
+def get_prices():
+    """Premium narxlari: [[kun, narx], ...]"""
+    try:
+        return [[int(d), int(p)] for d, p in json.loads(db.get_text("prices", "[]"))]
+    except Exception:
+        return [list(x) for x in DEFAULT_PREMIUM_DAYS_PRICES]
+
+
+def post_channels() -> list:
+    """Post yuboriladigan kanallar (bir nechta bo'lishi mumkin, vergul bilan saqlanadi)"""
+    raw = db.get_setting("post_channel") or ""
+    return [x.strip() for x in raw.split(",") if x.strip()]
+
+
+def get_socials() -> list:
+    """Majburiy obunadagi ijtimoiy tarmoq havolalari: [[nom, url], ...] (eng ko'pi 2 ta)"""
+    try:
+        return [list(x) for x in json.loads(db.get_setting("socials", "[]"))][:2]
+    except Exception:
+        return []
+
+
+def protect_on() -> bool:
+    """Kontent cheklash (forward/saqlash taqiqi)"""
+    return db.get_setting("protect", "0") == "1"
+
+
+def bot_is_on() -> bool:
+    return db.get_setting("bot_on", "1") == "1"
+
+
+async def send_to_post_channels(bot: Bot, fn):
+    """fn(chat_id) ni har bir post kanaliga bajaradi. (muvaffaqiyatli, xatolar) qaytaradi"""
+    ok, errs = 0, []
+    for ch in post_channels():
+        try:
+            await fn(ch)
+            ok += 1
+        except Exception as e:
+            errs.append(f"{ch}: {e}")
+    return ok, errs
+
+
+def menu_texts() -> set:
+    return {
+        db.get_text("btn_codes", "🔑 Kod kiritish"),
+        db.get_text("btn_premium", "💎 Premium"),
+        db.get_text("btn_animes", "🎬 Animelar"),
+        db.get_text("btn_profile", "👤 Profil"),
+    }
+
+
+def admin_panel_kb() -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    b.row(InlineKeyboardButton(text="⚙️ Birlamchi sozlamalar", callback_data="admin:settings"))
+    b.row(InlineKeyboardButton(text="📊 Statistika", callback_data="admin:stats"),
+          InlineKeyboardButton(text="📢 Xabar yuborish", callback_data="admin:broadcast"))
+    b.row(InlineKeyboardButton(text="📬 Post tayyorlash", callback_data="admin:post"),
+          InlineKeyboardButton(text="📌 Konkurs", callback_data="admin:contest"),
+          InlineKeyboardButton(text="📩 TEXT POST", callback_data="admin:textpost"))
+    b.row(InlineKeyboardButton(text="🎬 Animelar sozlash", callback_data="admin:animes"),
+          InlineKeyboardButton(text="💳 Hamyonlar", callback_data="admin:wallets"))
+    b.row(InlineKeyboardButton(text="🔍 Foydalanuvchini boshqarish", callback_data="admin:user_manage"))
+    b.row(InlineKeyboardButton(text="📣 Kanallar", callback_data="admin:channels"),
+          InlineKeyboardButton(text="🔘 Tugmalar", callback_data="admin:buttons"),
+          InlineKeyboardButton(text="📄 Matnlar", callback_data="admin:texts"))
+    return b.as_markup()
+
+
+def back_kb(data: str = "admin:panel") -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    b.row(InlineKeyboardButton(text="🔙 Orqaga", callback_data=data))
+    return b.as_markup()
+
+
+def user_menu_kb() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(keyboard=[
+        [KeyboardButton(text=db.get_text("btn_codes", "🔑 Kod kiritish")),
+         KeyboardButton(text=db.get_text("btn_premium", "💎 Premium"))],
+        [KeyboardButton(text=db.get_text("btn_animes", "🎬 Animelar")),
+         KeyboardButton(text=db.get_text("btn_profile", "👤 Profil"))],
+    ], resize_keyboard=True)
+
+
+def premium_kb() -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    for days, price in get_prices():
+        b.row(InlineKeyboardButton(text=f"💎 {days} kun — {price:,} so'm", callback_data=f"buy:{days}"))
+    return b.as_markup()
+
+
+async def mark_message(msg: Message, suffix: str):
+    """Xabar (matn yoki rasm/fayl sarlavhasi) oxiriga belgi qo'shadi va tugmalarni olib tashlaydi"""
+    try:
+        base = msg.html_text or ""
+        if msg.text is not None:
+            await msg.edit_text(base + suffix)
+        else:
+            await msg.edit_caption(caption=base + suffix)
+    except Exception:
+        try:
+            await msg.edit_reply_markup(reply_markup=None)
+        except Exception:
+            pass
+
+
+# =====================================================================
+#                           ADMIN PANEL
+# =====================================================================
+def _is_admin(event) -> bool:
+    return bool(event.from_user and event.from_user.id in ADMIN_IDS)
+
+
+admin_router = Router()
+admin_router.message.filter(_is_admin)
+admin_router.callback_query.filter(_is_admin)
+
+
+class AdminStateReset(BaseMiddleware):
+    """Admin menyusidagi har bir 'admin:...' tugmasi eski holatni (FSM) tozalaydi"""
+
+    async def __call__(self, handler, event, data):
+        if (isinstance(event, CallbackQuery) and (event.data or "").startswith("admin:")
+                and event.from_user.id in ADMIN_IDS):
+            st = data.get("state")
+            if st:
+                await st.clear()
+        return await handler(event, data)
+
+
+admin_router.callback_query.outer_middleware(AdminStateReset())
+
+
+class AdminFSM(StatesGroup):
+    broadcast = State()
+    post_content = State()
+    post_button = State()
+    textpost = State()
+    contest = State()
+    anime_title = State()
+    anime_desc = State()
+    ep_number = State()
+    ep_file = State()
+    ep_code = State()
+    ep_del_code = State()
+    wallet_add = State()
+    channel_add = State()
+    user_id = State()
+    text_value = State()
+    btn_value = State()
+    setting_channel = State()
+    setting_admin = State()
+    setting_prices = State()
+    anime_edit_value = State()
+    social_add = State()
+
+
+TXT_LABELS = {
+    "start_text": "🎬 Start xabari",
+    "premium_text": "💎 Premium matni",
+    "help_text": "📞 Yordam matni",
+}
+BTN_LABELS = {
+    "btn_codes": "🔑 Kod tugmasi",
+    "btn_premium": "💎 Premium tugmasi",
+    "btn_animes": "🎬 Animelar tugb.run("INSERT INTO wallets(name, card_number) VALUES(?,?)", (name, card))
 
     @staticmethod
     def get_wallets(active_only=True):
