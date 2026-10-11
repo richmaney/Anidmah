@@ -49,7 +49,7 @@ log = logging.getLogger("anime_bot")
 #                            SOZLAMALAR
 # =====================================================================
 # Token: @BotFather dan olinadi. Environment variable BOT_TOKEN bo'lsa, o'sha ishlatiladi.
-BOT_TOKEN = os.getenv("BOT_TOKEN", "")
+BOT_TOKEN = os.getenv("BOT_TOKEN", "8620559899:AAGE2DQd2xfbj5hUmA2M9rMsd7JHIXRYkMc")
 
 # Adminlar (Telegram ID). Environment: ADMIN_IDS="123456789,987654321"
 _env_admins = [int(x) for x in re.split(r"[,\s]+", os.getenv("ADMIN_IDS", "")) if x.isdigit()]
