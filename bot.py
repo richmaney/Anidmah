@@ -49,7 +49,7 @@ log = logging.getLogger("anime_bot")
 #                            SOZLAMALAR
 # =====================================================================
 # Token: @BotFather dan olinadi. Environment variable BOT_TOKEN bo'lsa, o'sha ishlatiladi.
-BOT_TOKEN = os.getenv("BOT_TOKEN", "8620559899:AAGE2DQd2xfbj5hUmA2M9rMsd7JHIXRYkMc")
+BOT_TOKEN = os.getenv("BOT_TOKEN", "8863123801:AAEg9U5bglnMOJe6W5ZxYV8lPIuHCCfiNTk")
 
 # Adminlar (Telegram ID). Environment: ADMIN_IDS="123456789,987654321"
 _env_admins = [int(x) for x in re.split(r"[,\s]+", os.getenv("ADMIN_IDS", "")) if x.isdigit()]
@@ -553,211 +553,6 @@ BTN_LABELS = {
     "btn_premium": "💎 Premium tugmasi",
     "btn_animes": "🎬 Animelar tugmasi",
     "btn_profile": "👤 Profil tugmasi",
-    }
-    @staticmethod
-    def get_wallets(active_only=True):
-        return db.many("SELECT * FROM wallets" + (" WHERE is_active=1" if active_only else ""))
-
-    @staticmethod
-    def delete_wallet(wid):
-        db.run("DELETE FROM wallets WHERE id=?", (wid,))
-
-    # ---------- majburiy obuna kanallari ----------
-    @staticmethod
-    def add_channel(cid, url):
-        db.run("INSERT OR IGNORE INTO channels(channel_id, channel_url) VALUES(?,?)", (cid, url))
-
-    @staticmethod
-    def get_channels():
-        return db.many("SELECT * FROM channels")
-
-    @staticmethod
-    def delete_channel(cid):
-        db.run("DELETE FROM channels WHERE id=?", (cid,))
-
-    # ---------- matnlar / sozlamalar ----------
-    @staticmethod
-    def get_text(key, default=""):
-        r = db.one("SELECT value FROM texts WHERE key=?", (key,))
-        return r["value"] if r else default
-
-    @staticmethod
-    def set_text(key, value):
-        db.run("INSERT OR REPLACE INTO texts(key, value) VALUES(?,?)", (key, value))
-
-    @staticmethod
-    def get_setting(key, default=None):
-        r = db.one("SELECT value FROM settings WHERE key=?", (key,))
-        return r["value"] if r else default
-
-    @staticmethod
-    def set_setting(key, value):
-        db.run("INSERT OR REPLACE INTO settings(key, value) VALUES(?,?)", (key, value))
-
-    # ---------- to'lov so'rovlari ----------
-    @staticmethod
-    def create_payment(rid, user_id, days, amount):
-        db.run("INSERT INTO payments(rid, user_id, days, amount, created_at) VALUES(?,?,?,?,?)",
-               (rid, user_id, days, amount, datetime.now().isoformat()))
-
-    @staticmethod
-    def get_payment(rid):
-        return db.one("SELECT * FROM payments WHERE rid=?", (rid,))
-
-    @staticmethod
-    def resolve_payment(rid, status):
-        """So'rovni faqat BIR marta ko'rib chiqishga ruxsat beradi (ikki marta premium berilmasligi uchun)"""
-        return db.run("UPDATE payments SET status=? WHERE rid=? AND status='pending'", (status, rid))[1] > 0
-
-
-def load_admins():
-    """Admin paneldan qo'shilgan adminlarni bazadan yuklaydi (qayta ishga tushganda yo'qolmaydi)"""
-    try:
-        for a in json.loads(db.get_setting("extra_admins", "[]")):
-            if int(a) not in ADMIN_IDS:
-                ADMIN_IDS.append(int(a))
-    except Exception:
-        log.exception("extra_admins o'qib bo'lmadi")
-
-
-def save_admins():
-    extra = [a for a in ADMIN_IDS if a not in _env_admins and a != 123456789]
-    db.set_setting("extra_admins", json.dumps(extra))
-
-
-# =====================================================================
-#                  YORDAMCHI FUNKSIYALAR VA KLAVIATURALAR
-# =====================================================================
-def get_prices():
-    """Premium narxlari: [[kun, narx], ...]"""
-    try:
-        return [[int(d), int(p)] for d, p in json.loads(db.get_text("prices", "[]"))]
-    except Exception:
-        return [list(x) for x in DEFAULT_PREMIUM_DAYS_PRICES]
-
-
-def menu_texts() -> set:
-    return {
-        db.get_text("btn_codes", "🔑 Kod kiritish"),
-        db.get_text("btn_premium", "💎 Premium"),
-        db.get_text("btn_animes", "🎬 Animelar"),
-        db.get_text("btn_profile", "👤 Profil"),
-    }
-
-
-def admin_panel_kb() -> InlineKeyboardMarkup:
-    b = InlineKeyboardBuilder()
-    b.row(InlineKeyboardButton(text="⚙️ Birlamchi sozlamalar", callback_data="admin:settings"))
-    b.row(InlineKeyboardButton(text="📊 Statistika", callback_data="admin:stats"),
-          InlineKeyboardButton(text="📢 Xabar yuborish", callback_data="admin:broadcast"))
-    b.row(InlineKeyboardButton(text="📬 Post tayyorlash", callback_data="admin:post"),
-          InlineKeyboardButton(text="📌 Konkurs", callback_data="admin:contest"),
-          InlineKeyboardButton(text="📩 TEXT POST", callback_data="admin:textpost"))
-    b.row(InlineKeyboardButton(text="🎬 Animelar sozlash", callback_data="admin:animes"),
-          InlineKeyboardButton(text="💳 Hamyonlar", callback_data="admin:wallets"))
-    b.row(InlineKeyboardButton(text="🔍 Foydalanuvchini boshqarish", callback_data="admin:user_manage"))
-    b.row(InlineKeyboardButton(text="📣 Kanallar", callback_data="admin:channels"),
-          InlineKeyboardButton(text="🔘 Tugmalar", callback_data="admin:buttons"),
-          InlineKeyboardButton(text="📄 Matnlar", callback_data="admin:texts"))
-    return b.as_markup()
-
-
-def back_kb(data: str = "admin:panel") -> InlineKeyboardMarkup:
-    b = InlineKeyboardBuilder()
-    b.row(InlineKeyboardButton(text="🔙 Orqaga", callback_data=data))
-    return b.as_markup()
-
-
-def user_menu_kb() -> ReplyKeyboardMarkup:
-    return ReplyKeyboardMarkup(keyboard=[
-        [KeyboardButton(text=db.get_text("btn_codes", "🔑 Kod kiritish")),
-         KeyboardButton(text=db.get_text("btn_premium", "💎 Premium"))],
-        [KeyboardButton(text=db.get_text("btn_animes", "🎬 Animelar")),
-         KeyboardButton(text=db.get_text("btn_profile", "👤 Profil"))],
-    ], resize_keyboard=True)
-
-
-def premium_kb() -> InlineKeyboardMarkup:
-    b = InlineKeyboardBuilder()
-    for days, price in get_prices():
-        b.row(InlineKeyboardButton(text=f"💎 {days} kun — {price:,} so'm", callback_data=f"buy:{days}"))
-    return b.as_markup()
-
-
-async def mark_message(msg: Message, suffix: str):
-    """Xabar (matn yoki rasm/fayl sarlavhasi) oxiriga belgi qo'shadi va tugmalarni olib tashlaydi"""
-    try:
-        base = msg.html_text or ""
-        if msg.text is not None:
-            await msg.edit_text(base + suffix)
-        else:
-            await msg.edit_caption(caption=base + suffix)
-    except Exception:
-        try:
-            await msg.edit_reply_markup(reply_markup=None)
-        except Exception:
-            pass
-
-
-# =====================================================================
-#                           ADMIN PANEL
-# =====================================================================
-def _is_admin(event) -> bool:
-    return bool(event.from_user and event.from_user.id in ADMIN_IDS)
-
-
-admin_router = Router()
-admin_router.message.filter(_is_admin)
-admin_router.callback_query.filter(_is_admin)
-
-
-class AdminStateReset(BaseMiddleware):
-    """Admin menyusidagi har bir 'admin:...' tugmasi eski holatni (FSM) tozalaydi"""
-
-    async def __call__(self, handler, event, data):
-        if (isinstance(event, CallbackQuery) and (event.data or "").startswith("admin:")
-                and event.from_user.id in ADMIN_IDS):
-            st = data.get("state")
-            if st:
-                await st.clear()
-        return await handler(event, data)
-
-
-admin_router.callback_query.outer_middleware(AdminStateReset())
-
-
-class AdminFSM(StatesGroup):
-    broadcast = State()
-    post_content = State()
-    post_button = State()
-    textpost = State()
-    contest = State()
-    anime_title = State()
-    anime_desc = State()
-    ep_number = State()
-    ep_file = State()
-    ep_code = State()
-    ep_del_code = State()
-    wallet_add = State()
-    channel_add = State()
-    user_id = State()
-    text_value = State()
-    btn_value = State()
-    setting_channel = State()
-    setting_admin = State()
-    setting_prices = State()
-
-
-TXT_LABELS = {
-    "start_text": "🎬 Start xabari",
-    "premium_text": "💎 Premium matni",
-    "help_text": "📞 Yordam matni",
-}
-BTN_LABELS = {
-    "btn_codes": "🔑 Kod tugmasi",
-    "btn_premium": "💎 Premium tugmasi",
-    "btn_animes": "🎬 Animelar tugmasi",
-    "btn_profile": "👤 Profil tugmasi",
 }
 
 
@@ -840,7 +635,7 @@ async def post_got(m: Message, state: FSMContext):
 @admin_router.message(AdminFSM.post_button)
 async def post_button(m: Message, state: FSMContext, bot: Bot):
     data = await state.get_data()
-    ch = db.get_setting("post_channel")
+    ch = post_channels()
     if not ch:
         await state.clear()
         return await m.answer("❌ Post kanali o'rnatilmagan! (⚙️ Birlamchi sozlamalar → 📢 Post kanalini o'rnatish)",
@@ -852,15 +647,14 @@ async def post_button(m: Message, state: FSMContext, bot: Bot):
             return await m.answer("❌ Format xato. <code>Matn | https://link</code> yoki /skip:")
         markup = InlineKeyboardMarkup(inline_keyboard=[[
             InlineKeyboardButton(text=parts[0].strip(), url=parts[1].strip())]])
-    try:
-        await bot.copy_message(chat_id=ch, from_chat_id=data["post_chat"],
-                               message_id=data["post_mid"], reply_markup=markup)
-    except Exception as e:
-        await state.clear()
-        return await m.answer(f"❌ Kanalga yuborib bo'lmadi: {esc(str(e))}\nBot kanalda admin ekanini tekshiring.",
-                              reply_markup=back_kb())
+    ok, errs = await send_to_post_channels(
+        bot, lambda c: bot.copy_message(chat_id=c, from_chat_id=data["post_chat"],
+                                        message_id=data["post_mid"], reply_markup=markup))
     await state.clear()
-    await m.answer("✅ Post kanalga yuborildi!", reply_markup=back_kb())
+    msg = f"✅ Post {ok} ta kanalga yuborildi!"
+    if errs:
+        msg += "\n\n❌ Xatolar (bot kanalda admin ekanini tekshiring):\n" + "\n".join(esc(e) for e in errs)
+    await m.answer(msg, reply_markup=back_kb())
 
 
 # ================= TEXT POST =================
@@ -874,17 +668,16 @@ async def tp_start(cl: CallbackQuery, state: FSMContext):
 async def tp_go(m: Message, state: FSMContext, bot: Bot):
     if not m.text:
         return await m.answer("❌ Faqat matn yuboring:")
-    ch = db.get_setting("post_channel")
+    ch = post_channels()
     if not ch:
         await state.clear()
         return await m.answer("❌ Post kanali o'rnatilmagan! (⚙️ Birlamchi sozlamalar)", reply_markup=back_kb())
-    try:
-        await bot.send_message(ch, m.html_text)
-    except Exception as e:
-        await state.clear()
-        return await m.answer(f"❌ Kanalga yuborib bo'lmadi: {esc(str(e))}", reply_markup=back_kb())
+    ok, errs = await send_to_post_channels(bot, lambda c: bot.send_message(c, m.html_text))
     await state.clear()
-    await m.answer("✅ Matn kanalga yuborildi!", reply_markup=back_kb())
+    msg = f"✅ Matn {ok} ta kanalga yuborildi!"
+    if errs:
+        msg += "\n\n❌ Xatolar:\n" + "\n".join(esc(e) for e in errs)
+    await m.answer(msg, reply_markup=back_kb())
 
 
 # ================= KONKURS =================
@@ -917,6 +710,7 @@ async def animes_menu(cl: CallbackQuery):
     b.row(InlineKeyboardButton(text="📋 Ro'yxat", callback_data="admin:anime_list"),
           InlineKeyboardButton(text="❌ Anime o'chirish", callback_data="admin:anime_del"),
           InlineKeyboardButton(text="❌ Qism o'chirish", callback_data="admin:ep_del"))
+    b.row(InlineKeyboardButton(text="✏️ Anime tahrirlash (nom, tavsif, poster, fanadub)", callback_data="admin:anime_edit"))
     b.row(InlineKeyboardButton(text="🔙 Orqaga", callback_data="admin:panel"))
     await cl.message.edit_text("🎬 <b>Animelar sozlash</b>", reply_markup=b.as_markup())
 
@@ -953,7 +747,9 @@ async def aa_save(cl: CallbackQuery, state: FSMContext):
     data = await state.get_data()
     aid = db.add_anime(data["title"], data.get("desc", ""), int(cl.data.split(":")[1]))
     await state.clear()
-    await cl.message.edit_text(f"✅ Anime qo'shildi! ID: <code>{aid}</code>", reply_markup=back_kb("admin:animes"))
+    await cl.message.edit_text(f"✅ Anime qo'shildi! ID: <code>{aid}</code>\n\n"
+                               f"🖼 Poster va 🎙 fanadub nomini qo'shish uchun ✏️ Anime tahrirlash bo'limidan foydalaning.",
+                               reply_markup=back_kb("admin:animes"))
 
 
 @admin_router.callback_query(F.data == "admin:ep_add")
@@ -1033,6 +829,99 @@ async def anime_list(cl: CallbackQuery):
     if len(text) > 4000:  # Telegram xabar limiti 4096 belgi
         text = text[:3990] + "\n…(ro'yxat uzun, qisqartirildi)"
     await cl.message.edit_text(text, reply_markup=back_kb("admin:animes"))
+
+
+# ================= ANIME TAHRIRLASH =================
+def _ae_view(aid: int):
+    a = db.get_anime(aid)
+    if not a:
+        return None, None
+    text = (f"✏️ <b>{esc(a['title'])}</b>\n\n"
+            f"📝 Tavsif: {esc(a['description'] or '-')}\n"
+            f"🎙 Fanadub: {esc(a['fandub'] or '-')}\n"
+            f"🖼 Poster: {'✅ bor' if a['poster'] else '❌ yo`q'}\n"
+            f"🔐 Turi: {'🔒 Premium' if a['is_premium'] else '🆓 Bepul'}")
+    b = InlineKeyboardBuilder()
+    b.row(InlineKeyboardButton(text="✏️ Nomi", callback_data=f"ae_f:{aid}:title"),
+          InlineKeyboardButton(text="📝 Tavsif", callback_data=f"ae_f:{aid}:description"))
+    b.row(InlineKeyboardButton(text="🎙 Fanadub", callback_data=f"ae_f:{aid}:fandub"),
+          InlineKeyboardButton(text="🖼 Poster", callback_data=f"ae_f:{aid}:poster"))
+    b.row(InlineKeyboardButton(text="🔁 Premium/Bepul", callback_data=f"ae_prem:{aid}"))
+    b.row(InlineKeyboardButton(text="🔙 Orqaga", callback_data="admin:anime_edit"))
+    return text, b.as_markup()
+
+
+@admin_router.callback_query(F.data == "admin:anime_edit")
+async def ae_menu(cl: CallbackQuery):
+    animes = db.get_animes()
+    if not animes:
+        return await cl.answer("❌ Animelar yo'q!", show_alert=True)
+    b = InlineKeyboardBuilder()
+    for a in animes:
+        b.row(InlineKeyboardButton(text=f"✏️ {a['title']}", callback_data=f"ae_pick:{a['id']}"))
+    b.row(InlineKeyboardButton(text="🔙 Orqaga", callback_data="admin:animes"))
+    await cl.message.edit_text("Qaysi animeni tahrirlaysiz?", reply_markup=b.as_markup())
+
+
+@admin_router.callback_query(F.data.startswith("ae_pick:"))
+async def ae_pick(cl: CallbackQuery, state: FSMContext):
+    await state.clear()
+    text, kb = _ae_view(int(cl.data.split(":")[1]))
+    if not text:
+        return await cl.answer("❌ Anime topilmadi!", show_alert=True)
+    await cl.message.edit_text(text, reply_markup=kb)
+
+
+@admin_router.callback_query(F.data.startswith("ae_prem:"))
+async def ae_prem(cl: CallbackQuery):
+    aid = int(cl.data.split(":")[1])
+    a = db.get_anime(aid)
+    if not a:
+        return await cl.answer("❌ Anime topilmadi!", show_alert=True)
+    db.update_anime(aid, "is_premium", 0 if a["is_premium"] else 1)
+    text, kb = _ae_view(aid)
+    await cl.message.edit_text(text, reply_markup=kb)
+    await cl.answer("Saqlandi")
+
+
+@admin_router.callback_query(F.data.startswith("ae_f:"))
+async def ae_field(cl: CallbackQuery, state: FSMContext):
+    _, aid, field = cl.data.split(":")
+    await state.set_state(AdminFSM.anime_edit_value)
+    await state.update_data(ae_id=int(aid), ae_field=field)
+    prompts = {
+        "title": "✏️ Yangi nomni yuboring:",
+        "description": "📝 Yangi tavsifni yuboring (o'chirish uchun <code>-</code>):",
+        "fandub": "🎙 Fanadub nomini yuboring (o'chirish uchun <code>-</code>):",
+        "poster": "🖼 Poster rasmini yuboring (rasm sifatida):",
+    }
+    await cl.message.edit_text(prompts.get(field, "Yangi qiymatni yuboring:"),
+                               reply_markup=back_kb(f"ae_pick:{aid}"))
+
+
+@admin_router.message(AdminFSM.anime_edit_value)
+async def ae_save(m: Message, state: FSMContext):
+    d = await state.get_data()
+    aid, field = d.get("ae_id"), d.get("ae_field")
+    if not aid or not field:
+        await state.clear()
+        return await m.answer("❌ Xatolik. Qaytadan urinib ko'ring.", reply_markup=back_kb("admin:anime_edit"))
+    if field == "poster":
+        if not m.photo:
+            return await m.answer("❌ Rasmni <b>rasm</b> ko'rinishida yuboring (fayl emas):")
+        value = m.photo[-1].file_id
+    else:
+        if not m.text:
+            return await m.answer("❌ Matn yuboring:")
+        value = m.text.strip()
+        if value == "-" and field in ("description", "fandub"):
+            value = ""
+        if field == "title" and not value:
+            return await m.answer("❌ Nom bo'sh bo'lmasin:")
+    db.update_anime(aid, field, value)
+    await state.clear()
+    text, kb = _ae_view(aid)
+    await m.answer("✅ Yangilandi!\n\n" + text, reply_markup=kb)
 
 
 @admin_router.callback_query(F.data == "admin:anime_del")
@@ -1214,16 +1103,24 @@ async def prem_no(cl: CallbackQuery, bot: Bot):
 @admin_router.callback_query(F.data == "admin:channels")
 async def channels_menu(cl: CallbackQuery):
     chs = db.get_channels()
+    socials = get_socials()
     text = "📣 <b>Majburiy obuna kanallari:</b>\n\n"
     if chs:
-        text += "\n".join(f"• <code>{esc(c['channel_id'])}</code> — {esc(c['channel_url'])}" for c in chs)
+        text += "\n".join(f"• {'📨' if c['kind'] == 'request' else '📢'} <code>{esc(c['channel_id'])}</code> — {esc(c['channel_url'])}"
+                          for c in chs)
     else:
         text += "Hozircha kanal qo'shilmagan."
-    text += "\n\n⚠️ Bot har bir kanalda admin bo'lishi shart!"
+    if socials:
+        text += "\n\n🌐 <b>Ijtimoiy tarmoqlar:</b>\n" + "\n".join(f"• {esc(n)} — {esc(u)}" for n, u in socials)
+    text += "\n\n📨 — zayafka (so'rov) kanali\n⚠️ Bot har bir kanalda admin bo'lishi shart!"
     b = InlineKeyboardBuilder()
     b.row(InlineKeyboardButton(text="➕ Kanal qo'shish", callback_data="admin:channel_add"))
+    if len(socials) < 2:
+        b.row(InlineKeyboardButton(text="🌐 Instagram/YouTube qo'shish", callback_data="admin:social_add"))
     for c in chs:
         b.row(InlineKeyboardButton(text=f"❌ {c['channel_id']}", callback_data=f"ch_del:{c['id']}"))
+    for i, (n, _) in enumerate(socials):
+        b.row(InlineKeyboardButton(text=f"❌ {n}", callback_data=f"soc_del:{i}"))
     b.row(InlineKeyboardButton(text="🔙 Orqaga", callback_data="admin:panel"))
     await cl.message.edit_text(text, reply_markup=b.as_markup())
 
@@ -1231,16 +1128,19 @@ async def channels_menu(cl: CallbackQuery):
 @admin_router.callback_query(F.data == "admin:channel_add")
 async def ch_add_start(cl: CallbackQuery, state: FSMContext):
     await state.set_state(AdminFSM.channel_add)
-    await cl.message.edit_text("📣 Format: <code>@kanal | https://t.me/kanal</code>",
+    await cl.message.edit_text("📣 Oddiy kanal: <code>@kanal | https://t.me/kanal</code>\n\n"
+                               "📨 Zayafka (so'rov bilan qo'shiladigan) kanal:\n"
+                               "<code>-100123456789 | https://t.me/+AbCdEf | zayafka</code>",
                                reply_markup=back_kb("admin:channels"))
 
 
 @admin_router.message(AdminFSM.channel_add)
 async def ch_add(m: Message, state: FSMContext, bot: Bot):
-    parts = (m.text or "").split("|")
-    if len(parts) != 2:
+    parts = [x.strip() for x in (m.text or "").split("|")]
+    if len(parts) not in (2, 3):
         return await m.answer("❌ Format xato. Qayta kiriting:")
-    cid, url = parts[0].strip(), parts[1].strip()
+    cid, url = parts[0], parts[1]
+    kind = "request" if len(parts) == 3 and parts[2].lower() in ("zayafka", "request", "sorov", "so'rov") else "channel"
     if not url.startswith(("http://", "https://")):
         return await m.answer("❌ Havola https:// bilan boshlanishi kerak. Qayta kiriting:")
     try:
@@ -1249,11 +1149,47 @@ async def ch_add(m: Message, state: FSMContext, bot: Bot):
         member = await bot.get_chat_member(cid, me.id)
         if member.status not in ("administrator", "creator"):
             return await m.answer("❌ Bot bu kanalda ADMIN emas! Avval botni kanalga admin qiling va qayta kiriting:")
-    except Exception:
-        return await m.answer("❌ Kanal topilmadi! Bot kanalga qo'shilganmi? Qayta kiriting:")
-    db.add_channel(cid, url)
+    except Exception as e:
+        return await m.answer(f"❌ Kanal topilmadi! Bot kanalga qo'shilganmi? Qayta kiriting:\n\n<code>{esc(str(e))}</code>")
+    db.add_channel(cid, url, kind)
     await state.clear()
-    await m.answer("✅ Kanal qo'shildi!", reply_markup=back_kb("admin:channels"))
+    await m.answer("✅ Kanal qo'shildi!" + (" (📨 zayafka)" if kind == "request" else ""),
+                   reply_markup=back_kb("admin:channels"))
+
+
+@admin_router.callback_query(F.data == "admin:social_add")
+async def social_add_start(cl: CallbackQuery, state: FSMContext):
+    await state.set_state(AdminFSM.social_add)
+    await cl.message.edit_text("🌐 Format: <code>Instagram | https://instagram.com/sahifa</code>\n"
+                               "yoki <code>YouTube | https://youtube.com/@kanal</code>\n\n"
+                               "ℹ️ Ijtimoiy tarmoq obunasi tekshirilmaydi, faqat tugma sifatida ko'rsatiladi.",
+                               reply_markup=back_kb("admin:channels"))
+
+
+@admin_router.message(AdminFSM.social_add)
+async def social_add(m: Message, state: FSMContext):
+    parts = [x.strip() for x in (m.text or "").split("|")]
+    if len(parts) != 2 or not parts[0] or not parts[1].startswith(("http://", "https://")):
+        return await m.answer("❌ Format xato. <code>Nom | https://havola</code>")
+    socials = get_socials()
+    if len(socials) >= 2:
+        await state.clear()
+        return await m.answer("❌ Eng ko'pi 2 ta ijtimoiy tarmoq qo'shish mumkin.", reply_markup=back_kb("admin:channels"))
+    socials.append([parts[0], parts[1]])
+    db.set_setting("socials", json.dumps(socials))
+    await state.clear()
+    await m.answer("✅ Qo'shildi!", reply_markup=back_kb("admin:channels"))
+
+
+@admin_router.callback_query(F.data.startswith("soc_del:"))
+async def social_del(cl: CallbackQuery):
+    socials = get_socials()
+    idx = int(cl.data.split(":")[1])
+    if 0 <= idx < len(socials):
+        socials.pop(idx)
+        db.set_setting("socials", json.dumps(socials))
+    await cl.answer("✅ O'chirildi!")
+    await channels_menu(cl)
 
 
 @admin_router.callback_query(F.data.startswith("ch_del:"))
@@ -1327,22 +1263,48 @@ async def txt_save(m: Message, state: FSMContext):
 # ================= BIRLAMCHI SOZLAMALAR =================
 @admin_router.callback_query(F.data == "admin:settings")
 async def settings_menu(cl: CallbackQuery):
-    ch = db.get_setting("post_channel") or "❌ o'rnatilmagan"
+    chs = post_channels()
     text = (f"⚙️ <b>Birlamchi sozlamalar</b>\n\n"
-            f"📢 Post kanali: <code>{esc(ch)}</code>\n"
+            f"📢 Post kanallari: <code>{esc(', '.join(chs) if chs else '❌ o`rnatilmagan')}</code>\n"
+            f"🔒 Kontent cheklash: {'✅ yoqilgan' if protect_on() else '❌ o`chiq'}\n"
+            f"🤖 Bot holati: {'🟢 yoqilgan' if bot_is_on() else '🔴 o`chirilgan'}\n"
             f"👑 Adminlar: {', '.join(str(a) for a in ADMIN_IDS)}")
     b = InlineKeyboardBuilder()
-    b.row(InlineKeyboardButton(text="📢 Post kanalini o'rnatish", callback_data="admin:set_channel"))
+    b.row(InlineKeyboardButton(text="📢 Post kanali qo'shish", callback_data="admin:set_channel"),
+          InlineKeyboardButton(text="🗑 Post kanallarini tozalash", callback_data="admin:post_clear"))
+    b.row(InlineKeyboardButton(text="🔒 Kontent cheklashni almashtirish", callback_data="admin:toggle_protect"))
+    b.row(InlineKeyboardButton(text="🤖 Botni yoqish/o'chirish", callback_data="admin:toggle_bot"))
     b.row(InlineKeyboardButton(text="💰 Premium narxlarini o'zgartirish", callback_data="admin:set_prices"))
     b.row(InlineKeyboardButton(text="➕ Admin qo'shish", callback_data="admin:add_admin"))
     b.row(InlineKeyboardButton(text="🔙 Orqaga", callback_data="admin:panel"))
     await cl.message.edit_text(text, reply_markup=b.as_markup())
 
 
+@admin_router.callback_query(F.data == "admin:post_clear")
+async def post_clear(cl: CallbackQuery):
+    db.set_setting("post_channel", "")
+    await cl.answer("🗑 Post kanallari tozalandi")
+    await settings_menu(cl)
+
+
+@admin_router.callback_query(F.data == "admin:toggle_protect")
+async def toggle_protect(cl: CallbackQuery):
+    db.set_setting("protect", "0" if protect_on() else "1")
+    await cl.answer("Saqlandi")
+    await settings_menu(cl)
+
+
+@admin_router.callback_query(F.data == "admin:toggle_bot")
+async def toggle_bot(cl: CallbackQuery):
+    db.set_setting("bot_on", "0" if bot_is_on() else "1")
+    await cl.answer("Saqlandi")
+    await settings_menu(cl)
+
+
 @admin_router.callback_query(F.data == "admin:set_channel")
 async def set_ch_start(cl: CallbackQuery, state: FSMContext):
     await state.set_state(AdminFSM.setting_channel)
-    await cl.message.edit_text("📢 Post yuboriladigan kanalni yuboring (@kanal yoki -100... ID):\n\n"
+    await cl.message.edit_text("📢 Post kanalini qo'shish (@kanal yoki -100... ID). Xohlagancha kanal qo'shsangiz bo'ladi, post hammasiga bir vaqtda ketadi:\n\n"
                                "⚠️ Bot kanalda admin bo'lishi shart!",
                                reply_markup=back_kb("admin:settings"))
 
@@ -1352,11 +1314,14 @@ async def set_ch(m: Message, state: FSMContext, bot: Bot):
     cid = (m.text or "").strip()
     try:
         await bot.get_chat(cid)
-    except Exception:
-        return await m.answer("❌ Kanal topilmadi! Qayta kiriting:")
-    db.set_setting("post_channel", cid)
+    except Exception as e:
+        return await m.answer(f"❌ Kanal topilmadi! Qayta kiriting:\n\n<code>{esc(str(e))}</code>")
+    chs = post_channels()
+    if cid not in chs:
+        chs.append(cid)
+    db.set_setting("post_channel", ",".join(chs))
     await state.clear()
-    await m.answer("✅ Post kanali o'rnatildi!", reply_markup=back_kb("admin:settings"))
+    await m.answer(f"✅ Post kanali qo'shildi! Jami: {len(chs)} ta", reply_markup=back_kb("admin:settings"))
 
 
 @admin_router.callback_query(F.data == "admin:set_prices")
@@ -1427,6 +1392,9 @@ async def is_subscribed(bot: Bot, user_id: int, use_cache: bool = True) -> bool:
             left = member.status in ("left", "kicked")
             restricted_out = member.status == "restricted" and not getattr(member, "is_member", True)
             if left or restricted_out:
+                # zayafka kanalida so'rov yuborgan bo'lsa — obuna hisoblanadi
+                if ch["kind"] == "request" and db.has_join_request(ch["channel_id"], user_id):
+                    continue
                 _SUB_CACHE.pop(user_id, None)
                 return False
         except Exception as e:
@@ -1442,11 +1410,30 @@ async def is_subscribed(bot: Bot, user_id: int, use_cache: bool = True) -> bool:
 
 async def send_sub_prompt(target: Message):
     b = InlineKeyboardBuilder()
+    has_request = False
     for ch in db.get_channels():
-        b.row(InlineKeyboardButton(text=f"📢 {ch['channel_id']}", url=ch["channel_url"]))
+        if ch["kind"] == "request":
+            has_request = True
+            b.row(InlineKeyboardButton(text=f"📨 {ch['channel_id']} (so'rov yuborish)", url=ch["channel_url"]))
+        else:
+            b.row(InlineKeyboardButton(text=f"📢 {ch['channel_id']}", url=ch["channel_url"]))
+    for name, url in get_socials():
+        b.row(InlineKeyboardButton(text=f"🌐 {name}", url=url))
     b.row(InlineKeyboardButton(text="✅ Obunani tekshirish", callback_data="check_sub"))
-    await target.answer("❗ <b>Botdan foydalanish uchun quyidagi kanallarga obuna bo'ling:</b>",
-                        reply_markup=b.as_markup())
+    text = "❗ <b>Botdan foydalanish uchun quyidagi kanallarga obuna bo'ling:</b>"
+    if has_request:
+        text += "\n\n📨 belgili kanallarda «Qo'shilish so'rovi»ni yuboring, keyin ✅ tugmasini bosing."
+    await target.answer(text, reply_markup=b.as_markup())
+
+
+@user_router.chat_join_request()
+async def on_join_request(ev: ChatJoinRequest):
+    """Zayafka kanaliga so'rov yuborgan foydalanuvchini eslab qolamiz"""
+    for ch in db.get_channels():
+        cid = ch["channel_id"]
+        if cid == str(ev.chat.id) or (ev.chat.username and cid.lower() == "@" + ev.chat.username.lower()):
+            db.add_join_request(cid, ev.from_user.id)
+            _SUB_CACHE.pop(ev.from_user.id, None)
 
 
 class GuardMiddleware(BaseMiddleware):
@@ -1471,6 +1458,11 @@ class GuardMiddleware(BaseMiddleware):
 
         if user.id in ADMIN_IDS:
             return await handler(event, data)
+
+        if not bot_is_on():
+            if isinstance(event, CallbackQuery):
+                return await event.answer("⏸ Bot vaqtincha o'chirilgan.", show_alert=True)
+            return await event.answer("⏸ Bot vaqtincha o'chirilgan. Keyinroq urinib ko'ring.")
 
         if u and u["is_banned"]:
             if isinstance(event, CallbackQuery):
@@ -1570,9 +1562,9 @@ async def use_code(m: Message, state: FSMContext, bot: Bot):
     if ep["file_id"]:
         try:
             if ep["file_type"] == "video":
-                await bot.send_video(m.chat.id, ep["file_id"], caption=caption)
+                await bot.send_video(m.chat.id, ep["file_id"], caption=caption, protect_content=protect_on())
             else:
-                await bot.send_document(m.chat.id, ep["file_id"], caption=caption)
+                await bot.send_document(m.chat.id, ep["file_id"], caption=caption, protect_content=protect_on())
         except Exception as e:
             log.error("Qismni yuborib bo'lmadi (kod %s): %s", code, e)
             await state.clear()
@@ -1674,14 +1666,24 @@ async def anime_info(cl: CallbackQuery):
         return await cl.answer("❌ Anime topilmadi!", show_alert=True)
     eps = db.get_episodes(a["id"])
     lock = "🔒 Premium" if a["is_premium"] else "🆓 Bepul"
-    text = (f"🎬 <b>{esc(a['title'])}</b>\n"
-            f"📝 {esc(a['description'] or '-')}\n"
-            f"🔐 {lock}\n\n"
-            f"📼 Qismlar: {len(eps)} ta\n"
-            f"Qism ochish uchun asosiy menyudan 🔑 Kod kiritish tugmasidan foydalaning.")
+    desc = a["description"] or "-"
+    if len(desc) > 600:
+        desc = desc[:600] + "…"
+    text = f"🎬 <b>{esc(a['title'])}</b>\n📝 {esc(desc)}\n"
+    if a["fandub"]:
+        text += f"🎙 Fanadub: {esc(a['fandub'])}\n"
+    text += (f"🔐 {lock}\n\n📼 Qismlar: {len(eps)} ta\n"
+             f"Qism ochish uchun asosiy menyudan 🔑 Kod kiritish tugmasidan foydalaning.")
     b = InlineKeyboardBuilder()
     b.row(InlineKeyboardButton(text="🔙 Animelar ro'yxati", callback_data="u_back"))
-    await cl.message.edit_text(text, reply_markup=b.as_markup())
+    if a["poster"]:
+        try:
+            await cl.message.delete()
+        except Exception:
+            pass
+        await cl.message.answer_photo(a["poster"], caption=text, reply_markup=b.as_markup())
+    else:
+        await cl.message.edit_text(text, reply_markup=b.as_markup())
     await cl.answer()
 
 
@@ -1736,7 +1738,13 @@ async def main():
     me = await bot.get_me()
     log.info("✅ Bot ishga tushdi: @%s | adminlar: %s | baza: %s", me.username, ADMIN_IDS, DB_NAME)
     try:
-        await dp.start_polling(bot)
+        # HOSTING: tarmoq xatosi bilan polling to'xtasa — avtomatik qayta ulanadi
+        while True:
+            try:
+                await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
+            except Exception:
+                log.exception("⚠️ Polling xatosi, 5 soniyadan keyin qayta ulanmoqda...")
+                await asyncio.sleep(5)
     finally:
         await bot.session.close()
 
