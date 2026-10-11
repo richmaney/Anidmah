@@ -551,8 +551,9 @@ TXT_LABELS = {
 BTN_LABELS = {
     "btn_codes": "🔑 Kod tugmasi",
     "btn_premium": "💎 Premium tugmasi",
-    "btn_animes": "🎬 Animelar tugb.run("INSERT INTO wallets(name, card_number) VALUES(?,?)", (name, card))
-
+    "btn_animes": "🎬 Animelar tugmasi",
+    "btn_profile": "👤 Profil tugmasi",
+    }
     @staticmethod
     def get_wallets(active_only=True):
         return db.many("SELECT * FROM wallets" + (" WHERE is_active=1" if active_only else ""))
