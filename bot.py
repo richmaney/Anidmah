@@ -1,279 +1,570 @@
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-🎌 ANIME BOT — bitta fayl (aiogram 3.7+)
+Telegram Anime Bot — bot.php ning Python 3.12 versiyasi.
 
-ISHGA TUSHIRISH
-    pip install "aiogram>=3.7"
-    1) Token va admin ID ni pastdagi SOZLAMALAR bo'limiga yozing
-       (yoki hosting panelida BOT_TOKEN va ADMIN_IDS environment variable qo'ying — xavfsizroq)
-    2) python bot.py
-    3) Botda /admin yozing
+O'rnatish:
+    pip install requests pymysql
 
-HOSTING UCHUN MUHIM
-    Ma'lumotlar bazasi (DB_NAME) doimiy diskda turishi kerak, aks holda har deploy'da
-    foydalanuvchilar va premiumlar o'chib ketadi.
-    Masalan: DB_NAME=/data/anime_bot.db  (hostingdagi Volume/Disk yo'li)
+Ishga tushirish:
+    python bot.py
 
-ESLATMA
-    Bot majburiy obuna kanallarida va post kanalida ADMIN bo'lishi shart.
+Eslatma: PHP dagi sql.php bilan bir xil MySQL baza ishlatiladi.
+Talab qilinadigan jadvalalar: user_id, kabinet, status, animelar,
+anime_datas, channels, joinRequests.
 """
-import asyncio
-import json
-import logging
+
 import os
-import random
 import re
-import secrets
-import sqlite3
+import json
 import time
-from datetime import datetime, timedelta
-from html import escape as esc
+import shutil
+import datetime
+import threading
 
-from aiogram import Bot, Dispatcher, Router, F, BaseMiddleware
-from aiogram.client.default import DefaultBotProperties
-from aiogram.enums import ParseMode
-from aiogram.exceptions import TelegramRetryAfter
-from aiogram.filters import Command, CommandStart
-from aiogram.fsm.context import FSMContext
-from aiogram.fsm.state import State, StatesGroup
-from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.types import (
-    Message, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup,
-    ReplyKeyboardMarkup, KeyboardButton, ChatJoinRequest,
-)
-from aiogram.utils.keyboard import InlineKeyboardBuilder
+import requests
+import pymysql
 
-log = logging.getLogger("anime_bot")
+# ===================== SOZLAMALAR =====================
+BOT_TOKEN = "8863123801:AAFORPVD5MO8u9PGA9xqLUeCs_va7uEK7GQ"
+API_KEY = BOT_TOKEN
+OBITO_US = "7112151149"            # Asosiy admin ID (PHP dagi $obito_us)
+EXTRA_ADMINS = ["2025400572"]    # Qo'shimcha adminlar
 
-# =====================================================================
-#                            SOZLAMALAR
-# =====================================================================
-# Token: @BotFather dan olinadi. Environment variable BOT_TOKEN bo'lsa, o'sha ishlatiladi.
-BOT_TOKEN = os.getenv("BOT_TOKEN", "8863123801:AAEg9U5bglnMOJe6W5ZxYV8lPIuHCCfiNTk")
-
-# Adminlar (Telegram ID). Environment: ADMIN_IDS="123456789,987654321"
-_env_admins = [int(x) for x in re.split(r"[,\s]+", os.getenv("ADMIN_IDS", "")) if x.isdigit()]
-ADMIN_IDS = _env_admins or [7112151149]  # <- o'zingizning Telegram ID raqamingizni qo'ying
-
-# Ma'lumotlar bazasi fayli (hostingda doimiy disk yo'lini ko'rsating)
-DB_NAME = os.getenv("DB_NAME", "anime_bot.db")
-
-# Standart premium narxlari [kun, so'm] — admin paneldan ham o'zgartiriladi
-DEFAULT_PREMIUM_DAYS_PRICES = [[7, 5000], [30, 15000], [90, 35000]]
-
-DEFAULT_TEXTS = {
-    "start_text": "🎌 <b>Anime Bot</b>ga xush kelibsiz!\n\n🔑 Shifrli kod orqali qismlarni oching yoki 💎 Premium sotib oling!",
-    "premium_text": "💎 <b>Premium obuna</b>\n\nPremium orqali barcha 🔒 animelarni cheksiz tomosha qiling!",
-    "help_text": "📞 Admin bilan bog'lanish: @admin_username",
-    "btn_codes": "🔑 Kod kiritish",
-    "btn_premium": "💎 Premium",
-    "btn_animes": "🎬 Animelar",
-    "btn_profile": "👤 Profil",
-    "prices": json.dumps(DEFAULT_PREMIUM_DAYS_PRICES),
+DB_CONF = {
+    "host": "localhost",
+    "user": "uztopanime",
+    "password": "uztopanime123",
+    "database": "uztopanime",
+    "charset": "utf8mb4",
 }
 
+# animes.php joylashgan sayt manzili (web_app tugmalari uchun)
+WEB_BASE_URL = "https://your-domain.example"
+WEBAPP_URL = f"{WEB_BASE_URL}/animes.php"
+ORG_COIN_URL = "https://boltayevrahmatillo42.uztan.ga/Channel/index.php"
 
-# =====================================================================
-#                        MA'LUMOTLAR BAZASI (SQLite)
-# =====================================================================
-class db:
-    """Barcha ma'lumotlar bazasi funksiyalari (db.nomi(...) ko'rinishida chaqiriladi)"""
+for _d in ("tizim", "step", "admin", "tugma", "matn"):
+    os.makedirs(_d, exist_ok=True)
 
-    # ---------- past darajadagi yordamchilar ----------
-    @staticmethod
-    def conn():
-        c = sqlite3.connect(DB_NAME, timeout=30)
-        c.row_factory = sqlite3.Row
-        return c
+connect = pymysql.connect(cursorclass=pymysql.cursors.DictCursor,
+                          autocommit=True, **DB_CONF)
 
-    @staticmethod
-    def run(sql, params=()):
-        c = db.conn()
+TZ = datetime.timezone(datetime.timedelta(hours=5))  # Asia/Tashkent
+
+def now():
+    return datetime.datetime.now(TZ)
+
+def soat():
+    return now().strftime("%H:%M")
+
+def sana():
+    return now().strftime("%d.%m.%Y")
+
+# ===================== YORDAMCHI FUNKSIYALAR =====================
+def get(p):
+    try:
+        with open(p, encoding="utf-8") as f:
+            return f.read()
+    except OSError:
+        return ""
+
+def put(p, c):
+    with open(p, "w", encoding="utf-8") as f:
+        f.write(str(c))
+
+def ensure(p, content):
+    if not get(p):
+        put(p, content)
+
+def delete_path(p):
+    if os.path.isdir(p):
+        shutil.rmtree(p, ignore_errors=True)
+    elif os.path.isfile(p):
         try:
-            cur = c.execute(sql, params)
-            c.commit()
-            return cur.lastrowid, cur.rowcount
-        finally:
-            c.close()
+            os.remove(p)
+        except OSError:
+            pass
 
-    @staticmethod
-    def one(sql, params=()):
-        c = db.conn()
-        try:
-            return c.execute(sql, params).fetchone()
-        finally:
-            c.close()
+def kb(markup):
+    return json.dumps(markup, ensure_ascii=False)
 
-    @staticmethod
-    def many(sql, params=()):
-        c = db.conn()
-        try:
-            return c.execute(sql, params).fetchall()
-        finally:
-            c.close()
+# birlamchi fayllar (PHP dagi kabi)
+KEYS = {
+    "key1": "🔎 Anime izlash",
+    "key2": "💎 VIP",
+    "key3": "💰 Hisobim",
+    "key4": "➕ Pul kiritish",
+    "key5": "📚 Qo'llanma",
+    "key6": "💵 Reklama va Homiylik",
+}
+for _k, _v in KEYS.items():
+    ensure(f"tugma/{_k}.txt", _v)
+ensure("admin/valyuta.txt", "so'm")
+ensure("admin/vip.txt", "25000")
+ensure("admin/holat.txt", "Yoqilgan")
+ensure("admin/anime_kanal.txt", "@username")
+ensure("tizim/content.txt", "false")
+ensure("matn/start.txt", "✨")
 
-    # ---------- yaratish ----------
-    @staticmethod
-    def init():
-        c = db.conn()
-        try:
-            try:
-                c.execute("PRAGMA journal_mode=WAL")
-            except Exception:
-                pass
-            c.executescript("""
-            CREATE TABLE IF NOT EXISTS users(
-                user_id INTEGER PRIMARY KEY,
-                username TEXT,
-                full_name TEXT,
-                joined_at TEXT,
-                is_banned INTEGER DEFAULT 0,
-                is_premium INTEGER DEFAULT 0,
-                premium_until TEXT,
-                codes_used INTEGER DEFAULT 0
-            );
-            CREATE TABLE IF NOT EXISTS animes(
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                title TEXT NOT NULL,
-                description TEXT DEFAULT '',
-                is_premium INTEGER DEFAULT 0
-            );
-            CREATE TABLE IF NOT EXISTS episodes(
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                anime_id INTEGER,
-                episode_number INTEGER,
-                code TEXT UNIQUE,
-                file_id TEXT,
-                file_type TEXT
-            );
-            CREATE TABLE IF NOT EXISTS wallets(
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT,
-                card_number TEXT,
-                is_active INTEGER DEFAULT 1
-            );
-            CREATE TABLE IF NOT EXISTS channels(
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                channel_id TEXT UNIQUE,
-                channel_url TEXT
-            );
-            CREATE TABLE IF NOT EXISTS texts(key TEXT PRIMARY KEY, value TEXT);
-            CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT);
-            CREATE TABLE IF NOT EXISTS payments(
-                rid TEXT PRIMARY KEY,
-                user_id INTEGER,
-                days INTEGER,
-                amount INTEGER,
-                status TEXT DEFAULT 'pending',
-                created_at TEXT
-            );
-            """)
-            c.executescript("""
-            CREATE TABLE IF NOT EXISTS join_requests(
-                channel_id TEXT,
-                user_id INTEGER,
-                PRIMARY KEY(channel_id, user_id)
-            );
-            """)
-            # eski bazalarga yangi ustunlarni xavfsiz qo'shish
-            for table, col, ddl in [
-                ("channels", "kind", "TEXT DEFAULT 'channel'"),
-                ("animes", "poster", "TEXT DEFAULT ''"),
-                ("animes", "fandub", "TEXT DEFAULT ''"),
-            ]:
-                cols = [r[1] for r in c.execute(f"PRAGMA table_info({table})").fetchall()]
-                if col not in cols:
-                    c.execute(f"ALTER TABLE {table} ADD COLUMN {col} {ddl}")
-            for k, v in DEFAULT_TEXTS.items():
-                c.execute("INSERT OR IGNORE INTO texts(key, value) VALUES(?, ?)", (k, v))
-            c.commit()
-        finally:
-            c.close()
+# ===================== TELEGRAM API =====================
+API = f"https://api.telegram.org/bot{API_KEY}"
+BOT_USERNAME = "bot"
 
-    # ---------- foydalanuvchilar ----------
-    @staticmethod
-    def add_user(user_id, username, full_name):
-        db.run("INSERT OR IGNORE INTO users(user_id, username, full_name, joined_at) VALUES(?,?,?,?)",
-               (user_id, username, full_name, datetime.now().isoformat()))
+def bot(method, **data):
+    data = {k: v for k, v in data.items() if v is not None}
+    try:
+        r = requests.post(f"{API}/{method}", data=data, timeout=60)
+        return r.json()
+    except Exception:
+        return {}
 
-    @staticmethod
-    def get_user(user_id):
-        return db.one("SELECT * FROM users WHERE user_id=?", (user_id,))
+def send_document(cid, path, caption):
+    try:
+        with open(path, "rb") as f:
+            requests.post(f"{API}/sendDocument",
+                          data={"chat_id": cid, "caption": caption,
+                                "parse_mode": "html"},
+                          files={"document": f}, timeout=60)
+    except OSError:
+        pass
 
-    @staticmethod
-    def all_user_ids():
-        return [r[0] for r in db.many("SELECT user_id FROM users WHERE is_banned=0")]
+def sms(cid, tx, m=None):
+    return bot("sendMessage", chat_id=cid, text=tx, parse_mode="HTML",
+               disable_web_page_preview=True, reply_markup=m)
 
-    @staticmethod
-    def ban_user(user_id):
-        db.run("UPDATE users SET is_banned=1 WHERE user_id=?", (user_id,))
+def edit(cid, mid, tx, m=None):
+    return bot("editMessageText", chat_id=cid, message_id=mid, text=tx,
+               parse_mode="HTML", disable_web_page_preview=True, reply_markup=m)
 
-    @staticmethod
-    def unban_user(user_id):
-        db.run("UPDATE users SET is_banned=0 WHERE user_id=?", (user_id,))
+def del_msg(cid, mid):
+    return bot("deleteMessage", chat_id=cid, message_id=mid)
 
-    @staticmethod
-    def set_premium(user_id, days):
-        """Premium beradi. Agar premium hali tugamagan bo'lsa — qolgan kunlarga QO'SHIB uzaytiradi."""
-        base = datetime.now()
-        u = db.get_user(user_id)
-        if u and u["is_premium"] and u["premium_until"]:
-            try:
-                cur = datetime.fromisoformat(u["premium_until"])
-                if cur > base:
-                    base = cur
-            except ValueError:
-                pass
-        until = (base + timedelta(days=int(days))).isoformat()
-        db.run("UPDATE users SET is_premium=1, premium_until=? WHERE user_id=?", (until, user_id))
-        return until
+def accl(qid, text, alert=False):
+    return bot("answerCallbackQuery", callback_query_id=qid, text=text,
+               show_alert=alert)
 
-    @staticmethod
-    def has_premium(user_id):
-        u = db.get_user(user_id)
-        if not u or not u["is_premium"]:
-            return False
-        if u["premium_until"] and u["premium_until"] < datetime.now().isoformat():
-            db.run("UPDATE users SET is_premium=0 WHERE user_id=?", (user_id,))
-            return False
+# ===================== MA'LUMOTLAR BAZASI =====================
+def q1(sql, args=None):
+    with connect.cursor() as c:
+        c.execute(sql, args or ())
+        return c.fetchone()
+
+def qall(sql, args=None):
+    with connect.cursor() as c:
+        c.execute(sql, args or ())
+        return c.fetchall()
+
+def run(sql, args=None):
+    with connect.cursor() as c:
+        c.execute(sql, args or ())
+        return c.lastrowid
+
+# ===================== ADMINLAR =====================
+def admin_list():
+    ids = [x.strip() for x in get("admin/admins.txt").split("\n") if x.strip()]
+    ids.append(str(OBITO_US))
+    ids += EXTRA_ADMINS
+    return ids
+
+def is_admin(cid):
+    return str(cid) in admin_list()
+
+def admins_alert(message):
+    for adm in admin_list():
+        sms(adm, message)
+
+# ===================== KLAVIATURALAR =====================
+BACK = kb({"resize_keyboard": True,
+           "keyboard": [[{"text": "◀️ Orqaga"}]]})
+
+BOSHQARISH = kb({"resize_keyboard": True,
+                 "keyboard": [[{"text": "🗄 Boshqarish"}]]})
+
+PANEL = kb({"resize_keyboard": True, "keyboard": [
+    [{"text": "*️⃣ Birlamchi sozlamalar"}],
+    [{"text": "📊 Statistika"}, {"text": "✉ Xabar Yuborish"}],
+    [{"text": "📬 Post tayyorlash"}],
+    [{"text": "🎥 Animelar sozlash"}, {"text": "💳 Hamyonlar"}],
+    [{"text": "🔎 Foydalanuvchini boshqarish"}],
+    [{"text": "📢 Kanallar"}, {"text": "🎛 Tugmalar"}, {"text": "📃 Matnlar"}],
+    [{"text": "📋 Adminlar"}, {"text": "🤖 Bot holati"}],
+    [{"text": "◀️ Orqaga"}],
+]})
+
+def key(i):
+    return get(f"tugma/key{i}.txt") or KEYS[f"key{i}"]
+
+def main_menu(cid):
+    menu = {"resize_keyboard": True, "keyboard": [
+        [{"text": key(1)}],
+        [{"text": key(2)}, {"text": key(3)}],
+        [{"text": key(4)}, {"text": key(5)}],
+        [{"text": key(6)}],
+    ]}
+    if is_admin(cid):
+        menu["keyboard"].append([{"text": "🗄 Boshqarish"}])
+    return kb(menu)
+
+# ===================== QOLIP MATNLAR =====================
+def anime_channels():
+    return [l.strip() for l in get("admin/anime_kanal.txt").split("\n")
+            if l.strip()]
+
+def start_text(cid, name):
+    t = get("matn/start.txt") or "✨"
+    return (t.replace("%first%", name or "")
+             .replace("%id%", str(cid))
+             .replace("%botname%", BOT_USERNAME)
+             .replace("%hour%", soat())
+             .replace("%date%", sana()))
+
+def qollanma_text(cid, name):
+    t = get("matn/qollanma.txt")
+    return (t.replace("%first%", name or "")
+             .replace("%id%", str(cid))
+             .replace("%hour%", soat())
+             .replace("%date%", sana())
+             .replace("%user%", get("admin/user.txt"))
+             .replace("%botname%", BOT_USERNAME))
+
+def prot_content():
+    return get("tizim/content.txt").strip() == "true"
+
+# ===================== EMOJI TEKSHIRUVI =====================
+EMOJI_RE = re.compile(
+    "[\U0001F600-\U0001F64F\U0001F300-\U0001F5FF\U0001F680-\U0001F6FF"
+    "\U0001F700-\U0001F77F\U0001F780-\U0001F7FF\U0001F800-\U0001F8FF"
+    "\U0001F900-\U0001F9FF\U0001FA00-\U0001FA6F\u2600-\u26FF\u2700-\u27BF]")
+
+def contains_emoji(s):
+    return bool(EMOJI_RE.search(s or ""))
+
+# ===================== MAJBURIY OBUNA =====================
+def joinchat(user_id, key=None):
+    user_id = str(user_id)
+    channels = qall("SELECT * FROM channels")
+    if not channels:
         return True
 
-    @staticmethod
-    def use_code(user_id):
-        db.run("UPDATE users SET codes_used=codes_used+1 WHERE user_id=?", (user_id,))
+    status_row = q1("SELECT status FROM user_id WHERE user_id=%s", (user_id,))
+    if status_row and status_row["status"] == "VIP":
+        return True
 
-    @staticmethod
-    def counts():
-        today = datetime.now().date().isoformat()
-        return {
-            "users": db.one("SELECT COUNT(*) FROM users")[0],
-            "premium": db.one("SELECT COUNT(*) FROM users WHERE is_premium=1")[0],
-            "today": db.one("SELECT COUNT(*) FROM users WHERE joined_at >= ?", (today,))[0],
-            "animes": db.one("SELECT COUNT(*) FROM animes")[0],
-            "episodes": db.one("SELECT COUNT(*) FROM episodes")[0],
-        }
+    noSubs = 0
+    buttons = []
+    for ch in channels:
+        channelId, channelType, channelLink = (ch["channelId"],
+                                               ch["channelType"],
+                                               ch["channelLink"])
+        if channelType == "request":
+            chk = q1("SELECT id FROM joinRequests WHERE channelId=%s AND userId=%s",
+                     (channelId, user_id))
+            if not chk:
+                run("INSERT INTO joinRequests (channelId, userId) VALUES (%s,%s)",
+                    (channelId, user_id))
+                noSubs += 1
+                buttons.append([{"text": f"📨 So‘rov yuborish ({noSubs})",
+                                 "url": f"https://t.me/{BOT_USERNAME}?start=joinreq_{channelId}"}])
+        else:
+            m = bot("getChatMember", chat_id=channelId, user_id=user_id)
+            st = ((m.get("result") or {}).get("status"))
+            if st in (None, "left", "kicked"):
+                noSubs += 1
+                info = bot("getChat", chat_id=channelId)
+                title = ((info.get("result") or {}).get("title")) or "Kanal"
+                buttons.append([{"text": title, "url": channelLink}])
 
-    # ---------- animelar ----------
-    @staticmethod
-    def add_anime(title, desc, is_premium):
-        return db.run("INSERT INTO animes(title, description, is_premium) VALUES(?,?,?)",
-                      (title, desc, is_premium))[0]
+    if noSubs > 0:
+        insta = get("admin/instagram.txt").strip()
+        youtube = get("admin/youtube.txt").strip()
+        if insta:
+            buttons.append([{"text": "📸 Instagram", "url": insta}])
+        elif youtube:
+            buttons.append([{"text": "📺 YouTube", "url": youtube}])
+        buttons.append([{"text": "✅ Tekshirish",
+                         "callback_data": ("chack=" + key) if key else "panel"}])
+        sms(user_id, "<b>Botdan foydalanish uchun quyidagi kanallarga obuna "
+                     "bo'ling yoki so‘rov yuboring❗️</b>",
+            kb({"inline_keyboard": buttons}))
+        return False
+    return True
 
-    @staticmethod
-    def get_animes():
-        return db.many("SELECT * FROM animes ORDER BY id")
+# ===================== ANIME KO'RSATISH =====================
+def show_anime(cid, anime_id):
+    if not str(anime_id).isdigit():
+        sms(cid, "❗ Noto‘g‘ri ID kiritildi.")
+        return
+    rew = q1("SELECT * FROM animelar WHERE id=%s", (anime_id,))
+    if not rew:
+        sms(cid, "❌ Ma'lumot topilmadi.")
+        return
 
-    @staticmethod
-    def get_anime(aid):
-        return db.one("SELECT * FROM animes WHERE id=?", (aid,))
+    file_id = rew["rams"] or ""
+    is_video = file_id[:1].upper() == "B"
+    media_type = "sendVideo" if is_video else "sendPhoto"
+    media_key = "video" if is_video else "photo"
 
-    @staticmethod
-    def delete_anime(aid):
-        db.run("DELETE FROM episodes WHERE anime_id=?", (aid,))
-        db.run("DELETE FROM animes WHERE id=?", (aid,))
+    cs = (rew["qidiruv"] or 0) + 1
+    run("UPDATE animelar SET qidiruv=%s WHERE id=%s", (cs, anime_id))
 
-    # ---------- qismlar ----------
-    @staticmethod
+    kanal = anime_channels()
+    capt = (f"<b>🎬 Nomi: {rew['nom']}</b>\n\n"
+            f"🎥 Qismi: {rew['qismi']}\n"
+            f"🌍 Davlati: {rew['davlat']}\n"
+            f"🇺🇿 Tili: {rew['tili']}\n"
+            f"📆 Yili: {rew['yili']}\n"
+            f"🎞 Janri: {rew['janri']}\n\n"
+            f"🔍 Qidirishlar soni: {cs}\n\n"
+            f"🍿 {kanal[0] if kanal else ''}")
+
+    bot(media_type, chat_id=cid, **{media_key: file_id}, caption=capt,
+        parse_mode="html",
+        reply_markup=kb({"inline_keyboard": [[
+            {"text": "📥 YUKLAB OLISH",
+            "callback_data": f"yuklanolish={anime_id}=1"}]]}),
+        protect_content=prot_content())
+
+# ===================== VIP CRON =====================
+def vip_cron():
+    today = now().strftime("%d")
+    for a in qall("SELECT * FROM `status`"):
+        if str(a.get("date")) != today:
+            day = int(a["kun"]) - 1
+            if day <= 0:
+                run("DELETE FROM `status` WHERE user_id=%s", (a["user_id"],))
+                run("UPDATE user_id SET status='Oddiy' WHERE user_id=%s",
+                    (a["user_id"],))
+            else:
+                run("UPDATE `status` SET kun=%s, `date`=%s WHERE user_id=%s",
+                    (day, today, a["user_id"]))
+
+def cron_loop():
+    while True:
+        try:
+            vip_cron()
+        except Exception as e:
+            print("VIP cron xatolik:", e)
+        time.sleep(3600)
+
+# ===================== XABAR HANDLER =====================
+def get_step(cid):
+    return get(f"step/{cid}.step").strip()
+
+def clear_step(cid):
+    delete_path(f"step/{cid}.step")
+
+def register(cid):
+    if not q1("SELECT id FROM user_id WHERE user_id=%s", (cid,)):
+        run("INSERT INTO user_id (user_id, status, sana) VALUES (%s,'Oddiy',%s)",
+            (cid, sana()))
+    if not q1("SELECT id FROM kabinet WHERE user_id=%s", (cid,)):
+        run("INSERT INTO kabinet (user_id, pul, pul2, odam, ban) "
+            "VALUES (%s,0,0,0,'unban')", (cid,))
+
+def handle_message(m):
+    frm = m.get("from") or {}
+    cid = m["chat"]["id"]
+    uid = frm.get("id", cid)
+    text = m.get("text") or ""
+    mid = m["message_id"]
+    name = frm.get("first_name") or ""
+    step = get_step(cid)
+
+    register(cid)
+
+    kab = q1("SELECT * FROM kabinet WHERE user_id=%s", (cid,)) or {}
+    usr = q1("SELECT * FROM user_id WHERE user_id=%s", (cid,)) or {}
+    status = usr.get("status", "Oddiy")
+    ban = kab.get("ban", "unban")
+    pul = kab.get("pul", 0)
+    valyuta = get("admin/valyuta.txt") or "so'm"
+    narx = int(get("admin/vip.txt") or 0)
+    holat = get("admin/holat.txt") or "Yoqilgan"
+
+    # ---- ban tekshiruvi ----
+    if text and ban == "ban":
+        return
+
+    # ---- bot holati ----
+    if text and holat == "O'chirilgan" and not is_admin(cid):
+        sms(cid, "⛔️ <b>Bot vaqtinchalik o'chirilgan!</b>\n\n"
+                 "<i>Botda ta'mirlash ishlari olib borilayotgan bo'lishi mumkin!</i>")
+        return
+
+    # ================= /start =================
+    if text == "/start" or text == "◀️ Orqaga":
+        sms(cid, start_text(cid, name), main_menu(cid))
+        clear_step(cid)
+        return
+
+    # ================= VIP bo'limi =================
+    if (text == key(2) or text == "/start anipass"):
+        if not joinchat(cid):
+            return
+        if status == "Oddiy":
+            sms(cid, f"<b>{key(2)}'ga ulanish\n\n{key(2)}da qanday imkoniyatlar bor?\n"
+                     "• VIP kanal uchun 1martalik havola beriladi\n"
+                     "• Hech qanday reklamalarsiz botdan foydalanasiz\n"
+                     "• Majburiy obunalik soʻralmaydi</b>\n\n"
+                     f"{key(2)} haqida batafsil Qo'llanma boʻlimidan olishiz mumkin!",
+                kb({"inline_keyboard": [
+                    [{"text": f"30 kun - {narx} {valyuta}", "callback_data": "shop=30"}],
+                    [{"text": f"60 kun - {narx*2} {valyuta}", "callback_data": "shop=60"}],
+                    [{"text": f"90 kun - {narx*3} {valyuta}", "callback_data": "shop=90"}],
+                ]}))
+        else:
+            st = q1("SELECT kun FROM `status` WHERE user_id=%s", (cid,))
+            aktiv_kun = int(st["kun"]) if st else 0
+            expire = (now() + datetime.timedelta(days=aktiv_kun)).strftime("%d.%m.%Y")
+            sms(cid, f"<b>Siz {key(2)} sotib olgansiz!</b>\n\n"
+                     f"⏳ Amal qilish muddati {expire} gacha",
+                kb({"inline_keyboard": [[{"text": "🗓️ Uzaytirish",
+                                          "callback_data": "uzaytirish"}]]}))
+        return
+
+    # ================= Hisobim =================
+    if text == key(3):
+        if not joinchat(cid):
+            return
+        sms(cid, f"#ID: <code>{cid}</code>\nBalans: {pul} {valyuta}")
+        return
+
+    # ================= Pul kiritish =================
+    if text == key(4):
+        if not joinchat(cid):
+            return
+        turi = get("tizim/turi.txt").strip()
+        if not turi:
+            sms(cid, "😔 To'lov tizimlari topilmadi!")
+            return
+        titles = [t.strip() for t in turi.split("\n") if t.strip()]
+        keys = [[{"text": t, "callback_data": f"pay-{t}"}] for t in titles]
+        sms(cid, "<b>💳 To'lov tizimlarni birini tanlang:</b>",
+            kb({"inline_keyboard": keys}))
+        return
+
+    # ================= Qo'llanma =================
+    if text == key(5):
+        if not joinchat(cid):
+            return
+        t = qollanma_text(cid, name)
+        if not t:
+            sms(cid, "<b>🙁 Qo'llanma qo'shilmagan!</b>")
+        else:
+            sms(cid, t)
+        return
+
+    # ================= Homiylik =================
+    if text == key(6):
+        if not joinchat(cid):
+            return
+        homiy = get("matn/homiy.txt")
+        if not homiy:
+            sms(cid, "<b>🙁 Homiylik qo'shilmagan!</b>")
+        else:
+            sms(cid, homiy, kb({"inline_keyboard": [[
+                {"text": "☎️ Administrator", "url": f"tg://user?id={OBITO_US}"}]]}))
+        return
+
+    # ================= ADMIN PANEL =================
+    if text in ("🗄 Boshqarish", "/panel") and is_admin(cid):
+        sms(cid, "<b>Admin paneliga xush kelibsiz!</b>", PANEL)
+        clear_step(cid)
+        delete_path("step/test.txt")
+        delete_path(f"step/{cid}.txt")
+        return
+
+    if text == "📊 Statistika" and is_admin(cid):
+        stat = len(qall("SELECT user_id FROM kabinet"))
+        try:
+            ping = os.getloadavg()[0]
+        except OSError:
+            ping = 0
+        sms(cid, f"💡 <b>O'rtacha yuklanish:</b> <code>{ping}</code>\n\n"
+                 f"👥 <b>Foydalanuvchilar:</b> {stat} ta",
+            kb({"inline_keyboard": [[{"text": "Orqaga",
+                                      "callback_data": "boshqarish"}]]}))
+        return
+
+    # ---------- Xabar yuborish ----------
+    if text == "✉ Xabar Yuborish" and is_admin(cid):
+        sms(cid, "<b>📤 Foydalanuvchilarga yuboriladigan xabarni botga yuboring!</b>",
+            BOSHQARISH)
+        put(f"step/{cid}.step", "sends")
+        return
+
+    if step == "sends" and is_admin(cid):
+        clear_step(cid)
+        sms(cid, "<b>✅ Xabar yuborish boshlandi!</b>", PANEL)
+        n = 0
+        for row in qall("SELECT user_id FROM kabinet"):
+            bot("forwardMessage", chat_id=row["user_id"], from_chat_id=cid,
+                message_id=mid)
+            n += 1
+            if n >= 30:
+                time.sleep(1)
+                n = 0
+        sms(cid, "<b>✅ Xabar yuborish tugallandi!</b>")
+        return
+
+    # ---------- Foydalanuvchini boshqarish ----------
+    if text == "🔎 Foydalanuvchini boshqarish" and is_admin(cid):
+        sms(cid, "<b>Kerakli foydalanuvchining ID raqamini kiriting:</b>",
+            BOSHQARISH)
+        put(f"step/{cid}.step", "iD")
+        return
+
+    if step == "iD" and is_admin(cid):
+        if not q1("SELECT id FROM user_id WHERE user_id=%s", (text,)):
+            sms(cid, "<b>Foydalanuvchi topilmadi.</b>\n\nQayta urinib ko'ring:")
+            return
+        user_panel(cid, None, text)
+        clear_step(cid)
+        return
+
+    # ---------- pul qo'shish ----------
+    if step.startswith("plus-") and is_admin(cid):
+        target = step.split("-")[1]
+        if text.isdigit():
+            sms(target, f"<b>Adminlar tomonidan hisobingiz {text} {valyuta} "
+                        "to'ldirildi!</b>")
+            sms(cid, f"<b>Foydalanuvchi hisobiga {text} {valyuta} qo'shildi!</b>",
+                PANEL)
+            k2 = q1("SELECT pul, pul2 FROM kabinet WHERE user_id=%s", (target,))
+            run("UPDATE kabinet SET pul=%s, pul2=%s WHERE user_id=%s",
+                ((k2["pul"] or 0) + int(text), (k2["pul2"] or 0) + int(text),
+                 target))
+            clear_step(cid)
+        else:
+            sms(cid, "<b>Faqat raqamlardan foydalaning!</b>")
+        return
+
+    # ---------- pul ayirish ----------
+    if step.startswith("minus-") and is_admin(cid):
+        target = step.split("-")[1]
+        if text.isdigit():
+            sms(target, f"<b>Adminlar tomonidan hisobingizdan {text} {valyuta} "
+                        "olib tashlandi!</b>")
+            sms(cid, f"<b>Foydalanuvchi hisobidan {text} {valyuta} olib "
+                     "tashlandi!</b>", PANEL)
+            k2 = q1("SELECT pul FROM kabinet WHERE user_id=%s", (target,))
+            run("UPDATE kabinet SET pul=%s WHERE user_id=%s",
+                ((k2["pul"] or 0) - int(text), target))
+            clear_step(cid)
+        else:
+            sms(cid, "<b>Faqat raqamlardan foydalaning!</b>")
+        return
+
+    # ---------- Adminlar ----------
+    if text == "📋 Adminlar" and is_admin(cid):
+        rows = [[{"text": "📑 Ro'yxat", "callback_data": "list"}]]
+        if str(cid) == str(OBITO_US):
+            rows = [[{"text": "➕ Yangi admin qo'shish", "callback_data": "add"}],
+                    [{"text": "📑 Ro'yxat", "callback_data": "list"},
+                     {"text": "🗑 O'chirish", "callback_data": "remove"}]]
+        rows.append([{"text": "Orqaga", "callback_data": "boshqarish"}])
+        sms(cid, "<b>Quyidagilardan birini tanlang:</b>"hod
     def add_episode(anime_id, number, code, file_id, file_type):
         db.run("INSERT INTO episodes(anime_id, episode_number, code, file_id, file_type) VALUES(?,?,?,?,?)",
                (anime_id, number, code, file_id, file_type))
