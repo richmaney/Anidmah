@@ -564,7 +564,7 @@ def handle_message(m):
                     [{"text": "📑 Ro'yxat", "callback_data": "list"},
                      {"text": "🗑 O'chirish", "callback_data": "remove"}]]
         rows.append([{"text": "Orqaga", "callback_data": "boshqarish"}])
-        sms(cid, "<b>Quyidagilardan birini tanlang:</b>"hod)
+        sms(cid, "<b>Quyidagilardan birini tanlang:</b>")
     def add_episode(anime_id, number, code, file_id, file_type):
         db.run("INSERT INTO episodes(anime_id, episode_number, code, file_id, file_type) VALUES(?,?,?,?,?)",
                (anime_id, number, code, file_id, file_type))
